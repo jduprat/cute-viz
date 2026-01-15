@@ -2,10 +2,16 @@
 Core visualization functions for CuTe layouts.
 """
 
+from typing import Tuple, Union
+
 import numpy as np
 import svgwrite
 from cutlass import cute, range_constexpr
 from cutlass.cute import size, rank, make_identity_tensor, idx2crd, depth
+
+
+# Type alias for slice specification
+SliceSpec = Union[int, slice, None, Tuple[Union[int, slice, None], ...]]
 
 
 @cute.jit
@@ -63,7 +69,7 @@ def _extract_layout_indices(layout):
     return _extract_layout_indices_universal(layout, total_size)
 
 
-def _create_layout_svg(layout, flatten_hierarchical=True):
+def _create_layout_svg(layout, flatten_hierarchical=True, highlight_indices=None):
     """
     Universal function to create SVG Drawing for any CuTe layout.
     
@@ -76,6 +82,7 @@ def _create_layout_svg(layout, flatten_hierarchical=True):
         layout: CuTe layout object (any rank, any nesting)
         flatten_hierarchical: If True (default), hierarchical layouts are rendered as flat grids.
                              If False, hierarchical layouts are rendered with tile boundaries.
+        highlight_indices: Optional set of indices to highlight with special styling.
 
     Returns:
         svgwrite.Drawing object
@@ -91,6 +98,11 @@ def _create_layout_svg(layout, flatten_hierarchical=True):
         (105, 105, 105),
         (80, 80, 80),
     ]
+
+    # Highlight styling for sliced/selected elements
+    highlight_fill = (255, 220, 150)
+    highlight_stroke = "red"
+    highlight_stroke_width = 2.5
 
     cell_size = 20
     layout_rank = int(rank(layout))
@@ -115,7 +127,16 @@ def _create_layout_svg(layout, flatten_hierarchical=True):
             idx = indices[i]
             x = i * cell_size
             y = label_margin
-            
+
+            is_highlighted = highlight_indices is not None and idx in highlight_indices
+            fill_color = (
+                highlight_fill
+                if is_highlighted
+                else rgb_255_colors[idx % len(rgb_255_colors)]
+            )
+            stroke_color = highlight_stroke if is_highlighted else "black"
+            stroke_w = highlight_stroke_width if is_highlighted else 1
+
             dwg.add(
                 dwg.rect(
                     insert=(x, y),
@@ -176,13 +197,25 @@ def _create_layout_svg(layout, flatten_hierarchical=True):
                 idx = indices[i, j]
                 x = j * cell_size + label_margin
                 y = i * cell_size + label_margin
-                
+
+                is_highlighted = (
+                    highlight_indices is not None and idx in highlight_indices
+                )
+                fill_color = (
+                    highlight_fill
+                    if is_highlighted
+                    else rgb_255_colors[idx % len(rgb_255_colors)]
+                )
+                stroke_color = highlight_stroke if is_highlighted else "black"
+                stroke_w = highlight_stroke_width if is_highlighted else 1
+
                 dwg.add(
                     dwg.rect(
                         insert=(x, y),
                         size=(cell_size, cell_size),
-                        fill=svgwrite.rgb(*rgb_255_colors[idx % len(rgb_255_colors)], mode="RGB"),
-                        stroke="black",
+                        fill=svgwrite.rgb(*fill_color, mode="RGB"),
+                        stroke=stroke_color,
+                        stroke_width=stroke_w,
                     )
                 )
                 
@@ -271,13 +304,25 @@ def _create_layout_svg(layout, flatten_hierarchical=True):
                     idx = indices[d, i, j]
                     x = slice_offset_x + j * cell_size + label_margin
                     y = i * cell_size + label_margin
-                    
+
+                    is_highlighted = (
+                        highlight_indices is not None and idx in highlight_indices
+                    )
+                    fill_color = (
+                        highlight_fill
+                        if is_highlighted
+                        else rgb_255_colors[idx % len(rgb_255_colors)]
+                    )
+                    stroke_color = highlight_stroke if is_highlighted else "black"
+                    stroke_w = highlight_stroke_width if is_highlighted else 1
+
                     dwg.add(
                         dwg.rect(
                             insert=(x, y),
                             size=(cell_size, cell_size),
-                            fill=svgwrite.rgb(*rgb_255_colors[idx % len(rgb_255_colors)], mode="RGB"),
-                            stroke="black",
+                            fill=svgwrite.rgb(*fill_color, mode="RGB"),
+                            stroke=stroke_color,
+                            stroke_width=stroke_w,
                         )
                     )
                     
@@ -1846,6 +1891,222 @@ def display_mma_layout(tiled_mma, tile_mnk):
     from IPython.display import SVG, display
     dwg = _create_mma_layout_svg(tiled_mma, tile_mnk)
     return display(SVG(dwg.tostring()))
+
+
+###################################
+# Slice Visualization API
+###################################
+
+
+def _normalize_slice_spec(slice_spec, layout):
+    """Normalize a slice specification to a tuple of slices/ints for each dimension."""
+    layout_rank = int(rank(layout))
+
+    if slice_spec is None:
+        return tuple(None for _ in range(layout_rank))
+
+    if isinstance(slice_spec, int):
+        if layout_rank == 1:
+            return (slice_spec,)
+        else:
+            raise ValueError(
+                f"Single int slice_spec requires rank-1 layout, got rank {layout_rank}"
+            )
+
+    if isinstance(slice_spec, slice):
+        if layout_rank == 1:
+            return (slice_spec,)
+        else:
+            raise ValueError(
+                f"Single slice requires rank-1 layout, got rank {layout_rank}"
+            )
+
+    if isinstance(slice_spec, tuple):
+        if len(slice_spec) != layout_rank:
+            raise ValueError(
+                f"slice_spec tuple length {len(slice_spec)} doesn't match layout rank {layout_rank}"
+            )
+        return slice_spec
+
+    raise ValueError(f"Invalid slice_spec type: {type(slice_spec)}")
+
+
+def _get_hierarchical_shape(layout, mode_idx):
+    """Get the hierarchical shape of a mode, returning nested tuples if applicable."""
+    layout_rank = int(rank(layout))
+
+    if layout_rank == 1:
+        return (int(size(layout)),)
+
+    mode_layout = layout[mode_idx]
+    mode_depth = int(depth(mode_layout))
+
+    if mode_depth == 0:
+        return (int(size(mode_layout)),)
+    else:
+        try:
+            mode_rank = int(rank(mode_layout))
+            return tuple(int(size(mode_layout[i])) for i in range(mode_rank))
+        except:
+            return (int(size(mode_layout)),)
+
+
+def _expand_hierarchical_slice(spec, shape):
+    """Expand a hierarchical slice specification to a set of flat indices."""
+    total_size = 1
+    for s in shape:
+        total_size *= s
+
+    if spec is None:
+        return set(range(total_size))
+
+    if isinstance(spec, int):
+        idx = spec if spec >= 0 else total_size + spec
+        if idx < 0 or idx >= total_size:
+            raise IndexError(f"Index {spec} out of bounds for size {total_size}")
+        return {idx}
+
+    if isinstance(spec, slice):
+        return set(range(*spec.indices(total_size)))
+
+    if isinstance(spec, tuple):
+        if len(spec) != len(shape):
+            raise ValueError(
+                f"Hierarchical slice spec length {len(spec)} doesn't match shape {shape}"
+            )
+
+        def expand_sub_spec(sub_spec, sub_size):
+            if sub_spec is None:
+                return list(range(sub_size))
+            elif isinstance(sub_spec, int):
+                idx = sub_spec if sub_spec >= 0 else sub_size + sub_spec
+                return [idx]
+            elif isinstance(sub_spec, slice):
+                return list(range(*sub_spec.indices(sub_size)))
+            else:
+                raise ValueError(f"Invalid sub-spec type: {type(sub_spec)}")
+
+        sub_indices = [expand_sub_spec(spec[i], shape[i]) for i in range(len(shape))]
+
+        strides = [1]
+        for i in range(len(shape) - 1):
+            strides.append(strides[-1] * shape[i])
+
+        selected = set()
+        from itertools import product
+
+        for coords in product(*sub_indices):
+            flat_idx = sum(c * s for c, s in zip(coords, strides))
+            selected.add(flat_idx)
+
+        return selected
+
+    raise ValueError(f"Invalid spec type: {type(spec)}")
+
+
+def _linear_to_coord(linear_idx, shape_sizes):
+    """Convert a linear index to a coordinate tuple (column-major order)."""
+    coord = []
+    remaining = linear_idx
+    for dim_size in shape_sizes:
+        coord.append(remaining % dim_size)
+        remaining //= dim_size
+    return tuple(coord)
+
+
+def _get_sliced_indices_set(layout, slice_spec):
+    """Get the set of linear indices that are part of the slice."""
+    layout_rank = int(rank(layout))
+    normalized_spec = _normalize_slice_spec(slice_spec, layout)
+
+    hierarchical_shapes = [
+        _get_hierarchical_shape(layout, i) for i in range(layout_rank)
+    ]
+
+    dim_indices = []
+    for dim, spec in enumerate(normalized_spec):
+        shape = hierarchical_shapes[dim]
+        try:
+            indices = _expand_hierarchical_slice(spec, shape)
+            dim_indices.append(indices)
+        except Exception as e:
+            raise ValueError(f"Error processing slice for dimension {dim}: {e}")
+
+    shape_sizes = _get_layout_shape_sizes(layout)
+    indices_flat = _extract_layout_indices(layout)
+    total_size = int(size(layout))
+
+    selected_indices = set()
+
+    for linear_idx in range(total_size):
+        coord = _linear_to_coord(linear_idx, shape_sizes)
+        in_slice = all(coord[dim] in dim_indices[dim] for dim in range(layout_rank))
+
+        if in_slice:
+            selected_indices.add(int(indices_flat[linear_idx]))
+
+    return selected_indices
+
+
+def _create_layout_slice_svg(layout, slice_spec, flatten_hierarchical=True):
+    """
+    Create SVG visualization of a layout with sliced indices highlighted.
+
+    Args:
+        layout: CuTe layout object
+        slice_spec: Slice specification indicating which elements to highlight
+        flatten_hierarchical: If True, hierarchical layouts are rendered as flat grids
+
+    Returns:
+        svgwrite.Drawing object
+    """
+    sliced_indices = _get_sliced_indices_set(layout, slice_spec)
+    return _create_layout_svg(
+        layout,
+        flatten_hierarchical=flatten_hierarchical,
+        highlight_indices=sliced_indices,
+    )
+
+
+def render_layout_slice_svg(layout, slice_spec, output_file, flatten_hierarchical=True):
+    """
+    Render a CuTe layout with sliced indices highlighted.
+
+    Args:
+        layout: CuTe layout object (any rank, any structure)
+        slice_spec: Slice specification. Can be:
+            - None: Select all elements
+            - int: Single index (for 1D layouts)
+            - slice: Python slice object (e.g., slice(0, 4) for [:4])
+            - tuple: Tuple of int/slice/None for each dimension
+        output_file: Output SVG file path
+        flatten_hierarchical: If True (default), hierarchical layouts are flattened
+    """
+    dwg = _create_layout_slice_svg(layout, slice_spec, flatten_hierarchical)
+    dwg.saveas(output_file)
+
+
+def display_layout_slice(layout, slice_spec, flatten_hierarchical=True):
+    """
+    Display a CuTe layout with sliced indices highlighted directly in Jupyter.
+
+    Args:
+        layout: CuTe layout object (any rank, any structure)
+        slice_spec: Slice specification. Can be:
+            - None: Select all elements
+            - int: Single index (for 1D layouts)
+            - slice: Python slice object (e.g., slice(0, 4) for [:4])
+            - tuple: Tuple of int/slice/None for each dimension
+        flatten_hierarchical: If True (default), hierarchical layouts are flattened
+
+    Returns:
+        IPython display object
+    """
+    from IPython.display import display, SVG
+
+    dwg = _create_layout_slice_svg(layout, slice_spec, flatten_hierarchical)
+    svg_string = dwg.tostring()
+    return display(SVG(svg_string))
 
 
 ###################################

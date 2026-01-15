@@ -28,7 +28,7 @@ def main():
 main()
 ```
 
-## Examples
+## Layout Examples
 | Example | Output |
 |---------|--------|
 | [**Basic Layout**](examples/layout_example.py) | ![Basic Layout](assets/layout.svg) |
@@ -38,12 +38,21 @@ main()
 | [**Thread-Value Layout**](examples/tv_layout_example.py) | ![TV Layout](assets/tv_layout.svg) |
 | [**LDMATRIX Copy Atom**](examples/ldmatrix_copy_example.py) | ![LDMATRIX Layout](assets/ldmatrix_copy.svg) |
 | [**MMA Atom (16×8×8)**](examples/mma_atom_example.py) | ![MMA Layout](assets/mma_layout.svg) |
+## Slicing Examples
+
+These intend to reproduce the slicing examples from the [Cute documentation](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/cute/03_tensor.html#slicing-a-tensor)
+| Example | Output |
+|---------|--------|
+| [**Slice Row**](examples/layout_slice_example.py) | ![Basic Layout](assets/slice_complex_row.svg) |
+| [**Slice Column**](examples/layout_slice_example.py) | ![1D Layout](assets/slice_complex_column.svg) |
+| [**Complex Slices**](examples/layout_slice_example.py) | ![Basic Layout](assets/slice_complex_3.svg) ![1D Layout](assets/slice_complex_4.svg) |
 
 ## Contributors
 
 Thanks to the following contributors for their improvements to cute-viz:
 
 - [@joydddd](https://github.com/joydddd) - Added support for 1D & hierarchical layouts ([#1](https://github.com/NTT123/cute-viz/pull/1))
+- [@jduprat](https://github.com/jduprat) - Added support for highlighting slices ([#2](https://github.com/NTT123/cute-viz/pull/2))
 
 ## Credits
 Based on the original visualization code by [Cris Cecka](https://github.com/ccecka) from [NVIDIA/cutlass#2453](https://github.com/NVIDIA/cutlass/issues/2453#issuecomment-3133409976).

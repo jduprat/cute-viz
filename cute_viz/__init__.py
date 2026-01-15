@@ -13,6 +13,7 @@ from .core import (
     render_mma_layout_svg,
     render_mma_from_layouts,
     render_tiled_mma_svg,
+    render_layout_slice_svg,
     display_svg,
     display_layout,
     display_tv_layout,
@@ -21,6 +22,7 @@ from .core import (
     display_tiled_copy,
     display_mma_layout,
     display_tiled_mma,
+    display_layout_slice,
     tidfrg_S,
     tidfrg_D,
 )
@@ -35,6 +37,7 @@ __all__ = [
     "render_mma_layout_svg",
     "render_mma_from_layouts",
     "render_tiled_mma_svg",
+    "render_layout_slice_svg",
     "display_svg",
     "display_layout",
     "display_tv_layout",
@@ -43,6 +46,7 @@ __all__ = [
     "display_tiled_copy",
     "display_mma_layout",
     "display_tiled_mma",
+    "display_layout_slice",
     "tidfrg_S",
     "tidfrg_D",
 ]
