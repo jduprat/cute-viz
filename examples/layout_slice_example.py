@@ -50,7 +50,7 @@ def main():
     render_layout_slice_svg(layout_1d, slice(2, 6), "assets/slice_1d.svg")
     print("  -> Saved to assets/slice_1d.svg")
 
-    # Repro the examples form CuTe docs
+    # Repro the examples from CuTe docs
     # https://docs.nvidia.com/cutlass/latest/media/docs/cpp/cute/03_tensor.html#slicing-a-tensor
     layout = cute.make_layout(((3, 2), (2, 5, 2)), stride=((4, 1), (2, 13, 100)))
     print(f"Layout: {layout}")
@@ -78,6 +78,41 @@ def main():
         layout, ((2, None), (None, 3, None)), "assets/slice_complex_4.svg"
     )
     print("  -> Saved to assets/slice_complex_4.svg")
+
+    # Repro the examples from Cris Cecka GPU Mode Lecture 57
+    # https://drive.google.com/file/d/1HU9O-B9Ycm-wlHS6vKxKFO7lEIXXBjfQ/view Slide 27
+    layout = cute.make_layout((8,(2,2)), stride=(2,(1,16)))  # (2,2):(1,2)
+    print(f"layout={layout}")
+    print(f"\nExample 11: Indexing into layout {layout}")
+    render_layout_slice_svg(layout, (3, None), "assets/slice_complex2_row.svg")
+    print("  -> Saved to assets/slice_complex2_row.svg")
+    render_layout_slice_svg(layout, (5,(None,1)), "assets/slice_complex2_box.svg")
+    print("  -> Saved to assets/slice_complex2_box.svg")
+    render_layout_slice_svg(layout, 17, "assets/slice_complex2_single1.svg")
+    print("  -> Saved to assets/slice_complex2_single1.svg")
+    render_layout_slice_svg(layout, (1,2), "assets/slice_complex2_single2.svg")
+    print("  -> Saved to assets/slice_complex2_single2.svg")
+    render_layout_slice_svg(layout, (1,(0,1)), "assets/slice_complex2_single3.svg")
+    print("  -> Saved to assets/slice_complex2_single3.svg")
+
+    # Repro the examples from Cris Cecka GPU Mode Lecture 57
+    # https://drive.google.com/file/d/1HU9O-B9Ycm-wlHS6vKxKFO7lEIXXBjfQ/view Slide 28
+    morton1 = cute.make_layout((2,2), stride=(1,2))  # (2,2):(1,2)
+    morton2 = cute.blocked_product(morton1, morton1) # ((2,2),(2,2)):((1,4),(2,8))
+    morton3 = cute.blocked_product(morton1, morton2) # ((2,(2,2)),(2,(2,2))):((1,(4,16)),(2,(8,32)))
+    print(f"\nExample 12: Indexing into Morton3 {morton3}")
+    render_layout_slice_svg(morton3, (None, 2), "assets/slice_complex3_col.svg")
+    print("  -> Saved to assets/slice_complex3_col.svg")
+    render_layout_slice_svg(morton3, ((None,1),(None,2)), "assets/slice_complex3_box.svg")
+    print("  -> Saved to assets/slice_complex3_box.svg")
+    render_layout_slice_svg(morton3, 37, "assets/slice_complex3_single1.svg")
+    print("  -> Saved to assets/slice_complex3_single1.svg")
+    render_layout_slice_svg(morton3, (5,4), "assets/slice_complex3_single2.svg")
+    print("  -> Saved to assets/slice_complex3_single2.svg")
+    render_layout_slice_svg(morton3, ((1,2),(0,2)), "assets/slice_complex3_single3.svg")
+    print("  -> Saved to assets/slice_complex3_single3.svg")
+    render_layout_slice_svg(morton3, ((1,(0,1)),(0,(0,1))), "assets/slice_complex3_single4.svg")
+    print("  -> Saved to assets/slice_complex3_single4.svg")
 
     print("\nDone! Check the assets/ directory for generated SVGs.")
 
