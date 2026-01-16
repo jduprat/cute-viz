@@ -1899,7 +1899,12 @@ def display_mma_layout(tiled_mma, tile_mnk):
 
 
 def _normalize_slice_spec(slice_spec, layout):
-    """Normalize a slice specification to a tuple of slices/ints for each dimension."""
+    """Normalize a slice specification to a tuple of slices/ints for each dimension.
+
+    For multi-rank layouts, a single int is interpreted as a linear index into
+    the coalesced layout, consistent with CuTe's linear indexing semantics.
+    In this case, we return a special marker that _get_sliced_indices_set handles.
+    """
     layout_rank = int(rank(layout))
 
     if slice_spec is None:
@@ -1909,9 +1914,9 @@ def _normalize_slice_spec(slice_spec, layout):
         if layout_rank == 1:
             return (slice_spec,)
         else:
-            raise ValueError(
-                f"Single int slice_spec requires rank-1 layout, got rank {layout_rank}"
-            )
+            # For multi-rank layouts, a single int is a linear index.
+            # Return a special marker tuple that _get_sliced_indices_set will handle.
+            return ("__linear_index__", slice_spec)
 
     if isinstance(slice_spec, slice):
         if layout_rank == 1:
@@ -1946,16 +1951,36 @@ def _get_hierarchical_shape(layout, mode_idx):
     else:
         try:
             mode_rank = int(rank(mode_layout))
-            return tuple(int(size(mode_layout[i])) for i in range(mode_rank))
+
+            def get_shape_recursive(sub_layout):
+                """Recursively extract shape, preserving hierarchy."""
+                sub_depth = int(depth(sub_layout))
+                if sub_depth == 0:
+                    return int(size(sub_layout))
+                else:
+                    sub_rank = int(rank(sub_layout))
+                    return tuple(
+                        get_shape_recursive(sub_layout[i]) for i in range(sub_rank)
+                    )
+
+            return tuple(get_shape_recursive(mode_layout[i]) for i in range(mode_rank))
         except:
             return (int(size(mode_layout)),)
 
 
+def _compute_shape_size(shape):
+    """Compute total size of a shape that may contain nested tuples."""
+    if isinstance(shape, int):
+        return shape
+    total = 1
+    for s in shape:
+        total *= _compute_shape_size(s)
+    return total
+
+
 def _expand_hierarchical_slice(spec, shape):
     """Expand a hierarchical slice specification to a set of flat indices."""
-    total_size = 1
-    for s in shape:
-        total_size *= s
+    total_size = _compute_shape_size(shape)
 
     if spec is None:
         return set(range(total_size))
@@ -1975,22 +2000,50 @@ def _expand_hierarchical_slice(spec, shape):
                 f"Hierarchical slice spec length {len(spec)} doesn't match shape {shape}"
             )
 
-        def expand_sub_spec(sub_spec, sub_size):
-            if sub_spec is None:
-                return list(range(sub_size))
-            elif isinstance(sub_spec, int):
-                idx = sub_spec if sub_spec >= 0 else sub_size + sub_spec
-                return [idx]
-            elif isinstance(sub_spec, slice):
-                return list(range(*sub_spec.indices(sub_size)))
+        def expand_sub_spec(sub_spec, sub_shape):
+            """Expand a sub-spec against a sub-shape (which may be int or tuple)."""
+            if isinstance(sub_shape, int):
+                sub_size = sub_shape
+                if sub_spec is None:
+                    return list(range(sub_size))
+                elif isinstance(sub_spec, int):
+                    idx = sub_spec if sub_spec >= 0 else sub_size + sub_spec
+                    return [idx]
+                elif isinstance(sub_spec, slice):
+                    return list(range(*sub_spec.indices(sub_size)))
+                else:
+                    raise ValueError(
+                        f"Invalid sub-spec type for flat shape: {type(sub_spec)}"
+                    )
             else:
-                raise ValueError(f"Invalid sub-spec type: {type(sub_spec)}")
+                # sub_shape is a tuple, need recursive expansion
+                nested_shape = sub_shape
+                nested_total = 1
+                for s in nested_shape:
+                    nested_total *= s
+
+                if sub_spec is None:
+                    return list(range(nested_total))
+                elif isinstance(sub_spec, int):
+                    idx = sub_spec if sub_spec >= 0 else nested_total + sub_spec
+                    return [idx]
+                elif isinstance(sub_spec, slice):
+                    return list(range(*sub_spec.indices(nested_total)))
+                elif isinstance(sub_spec, tuple):
+                    # Recursively expand the nested spec
+                    nested_result = _expand_hierarchical_slice(sub_spec, nested_shape)
+                    return list(nested_result)
+                else:
+                    raise ValueError(
+                        f"Invalid sub-spec type for nested shape: {type(sub_spec)}"
+                    )
 
         sub_indices = [expand_sub_spec(spec[i], shape[i]) for i in range(len(shape))]
 
+        # Compute strides for the flattened shape
         strides = [1]
         for i in range(len(shape) - 1):
-            strides.append(strides[-1] * shape[i])
+            strides.append(strides[-1] * _compute_shape_size(shape[i]))
 
         selected = set()
         from itertools import product
@@ -2018,6 +2071,25 @@ def _get_sliced_indices_set(layout, slice_spec):
     """Get the set of linear indices that are part of the slice."""
     layout_rank = int(rank(layout))
     normalized_spec = _normalize_slice_spec(slice_spec, layout)
+
+    # Handle linear index case for multi-rank layouts
+    if (
+        isinstance(normalized_spec, tuple)
+        and len(normalized_spec) == 2
+        and normalized_spec[0] == "__linear_index__"
+    ):
+        linear_idx = normalized_spec[1]
+        total_size = int(size(layout))
+        # Handle negative indices (e.g., -1 for last element)
+        if linear_idx < 0:
+            linear_idx = total_size + linear_idx
+        if linear_idx < 0 or linear_idx >= total_size:
+            raise ValueError(
+                f"Linear index {normalized_spec[1]} out of bounds for layout with size {total_size}"
+            )
+        # Call layout directly with linear index to match CuTe semantics
+        # (layout(44) is different from layout(idx2crd(44, shape)))
+        return {int(layout(linear_idx))}
 
     hierarchical_shapes = [
         _get_hierarchical_shape(layout, i) for i in range(layout_rank)
@@ -2076,7 +2148,7 @@ def render_layout_slice_svg(layout, slice_spec, output_file, flatten_hierarchica
         layout: CuTe layout object (any rank, any structure)
         slice_spec: Slice specification. Can be:
             - None: Select all elements
-            - int: Single index (for 1D layouts)
+            - int: Single linear index (works for any rank layout)
             - slice: Python slice object (e.g., slice(0, 4) for [:4])
             - tuple: Tuple of int/slice/None for each dimension
         output_file: Output SVG file path
